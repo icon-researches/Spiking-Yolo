@@ -32,7 +32,6 @@ class Conv(nn.Module):
     """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
 
     default_act = nn.SiLU()  # default activation
-    #default_act = nn.ReLU()
 
     def __init__(self, c1, c2, k=1, s=1, calculation=False ,p=None, g=1, d=1, act=True):
         """Initialize Conv layer with given arguments including activation."""
@@ -126,7 +125,6 @@ class SConv(nn.Module):
         spk_rec.append(spk)
 
       self.node.reset()
-      #self.node.neuronal_reset(spk)
 
       spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
 
@@ -144,7 +142,7 @@ class SConv(nn.Module):
         self.node.reset()
 
         spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
-        return spk_output #self.act(self.conv(x))
+        return spk_output
 
 
 class Conv2(Conv):
@@ -412,11 +410,11 @@ class CBAM(nn.Module):
 class Concat(nn.Module):
     """Concatenate a list of tensors along dimension."""
 
-    def __init__(self, dimension=1):
+    def __init__(self, dimension=1, calculation=False):
         """Concatenates a list of tensors along a specified dimension."""
         super().__init__()
         self.d = dimension
-        self.calculation = False
+        self.calculation = calculation
 
     def forward(self, x):
       self.calculation_li = [0]
@@ -466,16 +464,12 @@ class SConv_spike(nn.Module):
     # input spikes during self.timestep
     for t in range(self.timestep):
       cur_conv = self.conv(spikes[t])
-      # spk_conv, mem_conv = self.lif_conv(cur_conv, mem_conv)
       cur_bn = self.bn(cur_conv)
-      # spk_bn, mem_bn = self.lif_bn(cur_bn, mem_bn)
       spk_bn = self.node(cur_bn)
 
       if self.calculation == True:
         # conv 계층 연산 횟수 측정
         conv_syops = conv_syops_counter_hook(self.conv, spikes[t], cur_conv, "sconv_conv")
-        # lif_conv(Leaky) 계층 연산 횟수 측정
-        # lif_conv_syops = Leaky_syops_counter_hook(self.lif_conv, cur_conv, "sconv_lif_conv")
         # bn 계층 연산 횟수 측정
         bn_syops = bn_syops_counter_hook(self.bn, cur_conv, cur_bn, "sconv_bn")
         # lif_bn(Leaky) 계층 연산 횟수 측정
@@ -541,15 +535,12 @@ class SConv_AT(nn.Module):
     # input spikes during self.timestep
     for t in range(self.timestep):
       cur_conv = self.conv(spikes[t])
-      # spk_conv, mem_conv = self.lif_conv(cur_conv, mem_conv)
       cur_bn = self.bn(cur_conv)
       spk_bn = self.node(cur_bn.flatten(1))
 
       if self.calculation == True:
         # conv 계층 연산 횟수 측정
         conv_syops = conv_syops_counter_hook(self.conv, spikes[t], cur_conv, "sconv_conv")
-        # lif_conv(Leaky) 계층 연산 횟수 측정
-        # lif_conv_syops = Leaky_syops_counter_hook(self.lif_conv, cur_conv, "sconv_lif_conv")
         # bn 계층 연산 횟수 측정
         bn_syops = bn_syops_counter_hook(self.bn, cur_conv, cur_bn, "sconv_bn")
         # lif_bn(Leaky) 계층 연산 횟수 측정
