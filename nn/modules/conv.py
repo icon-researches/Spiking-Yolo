@@ -14,10 +14,9 @@ import snntorch as snn
 from snntorch import spikegen
 
 from ultralytics.nn.modules.calculator import conv_syops_counter_hook, bn_syops_counter_hook, pool_syops_counter_hook, Leaky_syops_counter_hook, silu_flops_counter_hook,IF_syops_counter_hook
-from ultralytics.nn.modules.neuron import AdaptiveIFNode, AdaptiveLIFNode
 
-__all__ = ('Conv', 'SConv', 'Conv2', 'LightConv', 'DWConv', 'DWConvTranspose2d', 'ConvTranspose', 'Focus', 'GhostConv',
-           'ChannelAttention', 'SpatialAttention', 'CBAM', 'Concat', 'RepConv', 'SConv_spike', 'SConv_AT')
+__all__ = ('Conv', 'Conv2', 'LightConv', 'DWConv', 'DWConvTranspose2d', 'ConvTranspose', 'Focus', 'GhostConv',
+           'ChannelAttention', 'SpatialAttention', 'CBAM', 'Concat', 'RepConv')
 
 
 def autopad(k, p=None, d=1):  # kernel, padding, dilation
@@ -32,6 +31,7 @@ class Conv(nn.Module):
     """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
 
     default_act = nn.SiLU()  # default activation
+    #default_act = nn.ReLU()
 
     def __init__(self, c1, c2, k=1, s=1, calculation=False ,p=None, g=1, d=1, act=True):
         """Initialize Conv layer with given arguments including activation."""
@@ -48,7 +48,7 @@ class Conv(nn.Module):
       z = self.act(y2)
 
       if self.calculation == True:
-        self.calculation_li = []
+        print("#=====Conv Block=====#")
         # conv 계층 연산 횟수 측정
         conv_syops = conv_syops_counter_hook(self.conv, x, y, "conv_conv")
         # bn 계층 연산 횟수 측정
@@ -56,93 +56,12 @@ class Conv(nn.Module):
         # silu 계층 연산 횟수 측정
         silu_syops = silu_flops_counter_hook(self.act, y2, z, "conv_silu")
 
-        self.calculation_li = [conv_syops, bn_syops, silu_syops]
-      else:
-        self.calculation_li = [0, 0, 0]
       """Apply convolution, batch normalization and activation to input tensor."""
       return z
 
     def forward_fuse(self, x):
         """Perform transposed convolution of 2D data."""
         return self.act(self.conv(x))
-
-class SConv(nn.Module):
-    """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
-
-    def __init__(self, c1, c2, k=1, s=1, calculation=False, p=None, g=1, d=1, act=True):
-        """Initialize Conv layer with given arguments including activation."""
-        super().__init__()
-        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.bn = nn.BatchNorm2d(c2)
-
-        variables = {}
-
-        with open('variables.csv', 'r') as csvfile:
-            reader = csv.reader(csvfile)
-            for row in reader:
-                variable, value = row
-                variables[variable.strip()] = value.strip()
-
-        self.timestep = int(variables['time-step'])
-        neuron_name = variables['neuron']
-
-        if neuron_name == 'IF':
-            self.node = neuron.IFNode()
-        elif neuron_name == 'LIF':
-            self.node = neuron.LIFNode()
-        else:
-            raise ValueError("Non defined neuron")
-
-        self.calculation = calculation
-
-    def forward(self, x):
-      spk_rec = []
-      y = self.conv(x)
-      y2 = self.bn(y)
-
-      if self.calculation == True:
-        self.calculation_li = []
-        # conv 계층 연산 횟수 측정
-        conv_syops = conv_syops_counter_hook(self.conv, x, y, 'sconv_conv')
-        # bn 계층 연산 횟수 측정
-        bn_syops = bn_syops_counter_hook(self.bn, y, y2, 'sconv_bn')
-
-        self.calculation_li = [conv_syops, bn_syops]
-      else:
-        self.calculation_li = [0, 0, 0]
-      shape = y2.size()
-
-      for t in range(self.timestep):
-        spk = self.node(y2.flatten(1))
-        # IF or LIF 계층 연산 횟수 측정
-        if self.calculation == True:
-          IF_syops = IF_syops_counter_hook(self.node, y2, spk,'sconv_IF')
-          if len(self.calculation_li) == 2:
-            self.calculation_li.append(IF_syops)
-          else:
-            self.calculation_li[2] = self.calculation_li[2] + IF_syops
-
-        spk_rec.append(spk)
-
-      self.node.reset()
-
-      spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
-
-      return spk_output
-
-    def forward_fuse(self, x):
-        spk_rec = []
-        x = self.conv(x)
-        shape = x.size()
-
-        for t in range(self.timestep):
-            spk = self.node(x.flatten(1))
-            spk_rec.append(spk)
-
-        self.node.reset()
-
-        spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
-        return spk_output
 
 
 class Conv2(Conv):
@@ -410,159 +329,14 @@ class CBAM(nn.Module):
 class Concat(nn.Module):
     """Concatenate a list of tensors along dimension."""
 
-    def __init__(self, dimension=1, calculation=False):
+    def __init__(self, dimension=1):
         """Concatenates a list of tensors along a specified dimension."""
         super().__init__()
         self.d = dimension
-        self.calculation = calculation
+        self.calculation = False
 
     def forward(self, x):
-      self.calculation_li = [0]
-      """Forward pass for the YOLOv8 mask Proto module."""
+      if self.calculation == True:
+        print("#=====Concat Block=====#")
+        """Forward pass for the YOLOv8 mask Proto module."""
       return torch.cat(x, self.d)
-
-
-class SConv_spike(nn.Module):
-  """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
-
-  def __init__(self, c1, c2, k=1, s=1, calculation=False ,p=None, g=1, d=1, act=True):
-    """Initialize Conv layer with given arguments including activation."""
-    super().__init__()
-    self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-    self.bn = nn.BatchNorm2d(c2)
-
-    variables = {}
-
-    with open('variables.csv', 'r') as csvfile:
-      reader = csv.reader(csvfile)
-      for row in reader:
-        variable, value = row
-        variables[variable.strip()] = value.strip()
-
-    self.timestep = int(variables['time-step'])
-
-    # Spiking 뉴런 추가
-    neuron_name = variables['neuron']
-    if neuron_name == 'IF':
-        self.node = neuron.IFNode()
-    elif neuron_name == 'LIF':
-        self.node = neuron.LIFNode()
-    else:
-        raise ValueError("Non defined neuron")
-
-    self.calculation = calculation
-
-  def forward(self, x):
-    if self.calculation == True:
-      self.calculation_li = []
-
-    spk_rec = []  # record output spikes
-
-    # generate spikes from input data (x)
-    spikes = spikegen.rate(x, num_steps=self.timestep)
-
-    # input spikes during self.timestep
-    for t in range(self.timestep):
-      cur_conv = self.conv(spikes[t])
-      cur_bn = self.bn(cur_conv)
-      spk_bn = self.node(cur_bn)
-
-      if self.calculation == True:
-        # conv 계층 연산 횟수 측정
-        conv_syops = conv_syops_counter_hook(self.conv, spikes[t], cur_conv, "sconv_conv")
-        # bn 계층 연산 횟수 측정
-        bn_syops = bn_syops_counter_hook(self.bn, cur_conv, cur_bn, "sconv_bn")
-        # lif_bn(Leaky) 계층 연산 횟수 측정
-        node_syops = IF_syops_counter_hook(self.node, cur_bn, "sconv_node")
-
-        if len(self.calculation_li) == 0:
-          self.calculation_li = [conv_syops, bn_syops, node_syops]
-        else:
-          self.calculation_li[0] = self.calculation_li[0] + conv_syops
-          self.calculation_li[1] = self.calculation_li[0] + bn_syops
-          self.calculation_li[2] = self.calculation_li[0] + node_syops
-      else:
-        self.calculation_li = [0, 0, 0]
-
-      spk_rec.append(spk_bn)  # record spikes
-
-    shape = cur_bn.size()
-    self.node.reset()
-
-    spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
-
-    return spk_output
-
-class SConv_AT(nn.Module):
-  """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
-
-  def __init__(self, c1, c2, k=1, s=1, calculation=False, p=None, g=1, d=1, act=True):
-    """Initialize Conv layer with given arguments including activation."""
-    super().__init__()
-    self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-    self.bn = nn.BatchNorm2d(c2)
-
-    variables = {}
-
-    with open('variables.csv', 'r') as csvfile:
-      reader = csv.reader(csvfile)
-      for row in reader:
-        variable, value = row
-        variables[variable.strip()] = value.strip()
-
-    self.timestep = int(variables['time-step'])
-
-    # Spiking 뉴런 추가
-    neuron_name = variables['neuron']
-    if neuron_name == 'IF':
-        self.node = AdaptiveIFNode()
-    elif neuron_name == 'LIF':
-        self.node = AdaptiveLIFNode()
-    else:
-        raise ValueError("Non defined neuron")
-
-    self.calculation = calculation
-
-  def forward(self, x):
-    if self.calculation == True:
-      self.calculation_li = []
-    # mem_conv = self.lif_conv.init_leaky()  # reset/init hidden states at t=0
-    spk_rec = []  # record output spikes
-
-    # generate spikes from input data (x)
-    spikes = spikegen.rate(x, num_steps=self.timestep)
-
-    # input spikes during self.timestep
-    for t in range(self.timestep):
-      cur_conv = self.conv(spikes[t])
-      cur_bn = self.bn(cur_conv)
-      spk_bn = self.node(cur_bn.flatten(1))
-
-      if self.calculation == True:
-        # conv 계층 연산 횟수 측정
-        conv_syops = conv_syops_counter_hook(self.conv, spikes[t], cur_conv, "sconv_conv")
-        # bn 계층 연산 횟수 측정
-        bn_syops = bn_syops_counter_hook(self.bn, cur_conv, cur_bn, "sconv_bn")
-        # lif_bn(Leaky) 계층 연산 횟수 측정
-        node_syops = IF_syops_counter_hook(self.node, cur_bn, "sconv_node")
-
-        if len(self.calculation_li) == 0:
-          self.calculation_li = [conv_syops, bn_syops, node_syops]
-        else:
-          self.calculation_li[0] = self.calculation_li[0] + conv_syops
-          self.calculation_li[1] = self.calculation_li[0] + bn_syops
-          self.calculation_li[2] = self.calculation_li[0] + node_syops
-
-      if self.calculation == False:
-        self.calculation_li = [0, 0, 0]
-
-      spk_rec.append(spk_bn)  # record spikes
-
-    self.node.reset()
-
-    shape = cur_bn.size()
-
-    spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
-
-    return spk_output
-

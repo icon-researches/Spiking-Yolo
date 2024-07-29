@@ -14,7 +14,7 @@ scales: # model compound scaling constants, i.e. 'model=yolov8n.yaml' will call 
 # YOLOv8.0n backbone
 backbone:
   # [from, repeats, module, args]
-  - [-1, 1, Conv, [64, 3, 2]]  # 0-P1/2
+  - [-1, 1, Conv, [64, 3, 2, [{'node': 'if', 'ts':1}]]]  # 0-P1/2
   - [-1, 1, Conv, [128, 3, 2]]  # 1-P2/4
   - [-1, 3, C2f, [128, True]]
   - [-1, 1, Conv, [256, 3, 2]]  # 3-P3/8
@@ -37,10 +37,13 @@ head:
 
   - [-1, 1, Conv, [256, 3, 2]] # 16
   - [[-1, 12], 1, Concat, [1]]  # cat head P4
-  - [-1, 3, SC2f_AT, [512, [None, [0, 1], None]]]  # 18 (P4/16-medium)
+  - [-1, 3, SC2f_AT, [512, {'first_conv':{'node': 'if', 'ts':1},
+                            {'bb':{'bb1':{'conv1':{'node': 'if', 'ts':1}, 'conv2':{'node': 'if', 'ts':1}}}
+                                  {'bb2':{'conv1':{'node': 'if', 'ts':1}, 'conv2':{'node': 'if', 'ts':1}}}}
+                            'last_conv':{'node': 'if', 'ts':1}}]]  # 18 (P4/16-medium)
 
   - [-1, 1, Conv, [512, 3, 2]] # 19
   - [[-1, 9], 1, Concat, [1]]  # cat head P5
-  - [-1, 3, SC2f_AT, [1024, [None, [0, 1], None]]]  # 21 (P5/32-large)
+  - [-1, 3, SC2f_AT, [1024, -[None, [0, 1], None]]]  # 21 (P5/32-large)
 
   - [[15, 18, 21], 1, Detect, [nc]]  # Detect(P3, P4, P5)

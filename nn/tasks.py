@@ -10,7 +10,8 @@ import torch.nn as nn
 from ultralytics.nn.modules import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                                     Classify, Concat, Conv, Conv2, ConvTranspose, Detect, SDetect, DWConv, DWConvTranspose2d,
                                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, Pose, RepC3, RepConv,
-                                    ResNetLayer, RTDETRDecoder, Segment, SConv, SBottleneck, SC2f, SSPPF, SConv_spike, SBottleneck_spike, SC2f_spike, Upsample, SConv_AT, SC2f_AT, SBottleneck_AT)
+                                    ResNetLayer, RTDETRDecoder, Segment, SBottleneck, SC2f, SSPPF, SBottleneck_spike, SC2f_spike,
+                                    Upsample, SC2f_AT, SBottleneck_AT, Spike_conv)
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8PoseLoss, v8SegmentationLoss
@@ -72,15 +73,13 @@ class BaseModel(nn.Module):
         Returns:
             (torch.Tensor): The last output of the model.
         """
-        y, dt, embeddings, calculation_li = [], [], [], []  # outputs
+        y, dt, embeddings = [], [], []  # outputs
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
-            calculation_li = calculation_li + m.calculation_li
-
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
@@ -88,7 +87,6 @@ class BaseModel(nn.Module):
                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max(embed):
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
-        self.calculation_li = calculation_li
         return x
 
     def _predict_augment(self, x):
@@ -132,7 +130,7 @@ class BaseModel(nn.Module):
         """
         if not self.is_fused():
             for m in self.model.modules():
-                if isinstance(m, (SConv, Conv, Conv2, DWConv)) and hasattr(m, 'bn'):
+                if isinstance(m, (Spike_conv, Conv, Conv2, DWConv)) and hasattr(m, 'bn'):
                     if isinstance(m, Conv2):
                         m.fuse_convs()
                     m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
@@ -238,7 +236,7 @@ class DetectionModel(BaseModel):
         if nc and nc != self.yaml['nc']:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml['nc'] = nc  # override YAML value
-        self.model, self.save, self.sub_modules = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
+        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.names = {i: f'{i}' for i in range(self.yaml['nc'])}  # default names dict
         self.inplace = self.yaml.get('inplace', True)
 
@@ -697,17 +695,18 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
 
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
-        if m in (Classify, SConv, Conv, ConvTranspose, GhostConv,  SBottleneck, Bottleneck, GhostBottleneck, SPP, SSPPF, SPPF, DWConv, Focus,
-                 BottleneckCSP, C1, C2, C2f, SC2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3, SConv_spike, SBottleneck_spike, SC2f_spike, SConv_AT, SBottleneck_AT, SC2f_AT):
+        if m in (Classify, Spike_conv, Conv, ConvTranspose, GhostConv,  SBottleneck, Bottleneck, GhostBottleneck, SPP, SSPPF, SPPF, DWConv, Focus,
+                 BottleneckCSP, C1, C2, C2f, SC2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3,
+                 SBottleneck_spike, SC2f_spike, SBottleneck_AT, SC2f_AT):
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
 
             args = [c1, c2, *args[1:]]
-            if m in (BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, C3x, RepC3):
+            if m in (BottleneckCSP, C1, C2, C2f, SC2f, C3, C3TR, C3Ghost, C3x, RepC3):
                 args.insert(2, n)  # number of repeats
                 n = 1
-            if m in (SC2f, SC2f_spike, SC2f_AT):
+            if m in (SC2f_spike, SC2f_AT):
               args.insert(3, n)
               n = 1
         elif m is AIFI:
@@ -732,6 +731,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args.insert(1, [ch[x] for x in f])
         else:
             c2 = ch[f]
+
         m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace('__main__.', '')  # module type
         m.np = sum(x.numel() for x in m_.parameters())  # number params
@@ -743,21 +743,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         if i == 0:
             ch = []
         ch.append(c2)
-
-    #⭐⭐⭐⭐⭐️Names of Layers⭐⭐⭐⭐⭐
-    names = []
-    for i in range(len(layers)):
-      get_leaf_modules(layers[i], i, names)
-
-    return nn.Sequential(*layers), sorted(save), names
-
-# ⭐하위 모듈의 이름을 list에 저장하는 함수
-def get_leaf_modules(module, key_name, names):
-  # module이 가장 하위 모듈인 경우
-  if len(list(module.children())) == 0:
-     names.append(key_name)
-  for name, module in module.named_children():
-    get_leaf_modules(module, str(key_name) + '.' + str(name), names)
+    return nn.Sequential(*layers), sorted(save)
 
 
 def yaml_model_load(path):

@@ -10,10 +10,10 @@ from torch.nn.init import constant_, xavier_uniform_
 from ultralytics.utils.tal import TORCH_1_10, dist2bbox, make_anchors
 
 from .block import DFL, Proto
-from .conv import Conv, SConv
+from .conv import Conv
+from .Spike_modules import Spike_conv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init_
-from .calculator import conv_syops_counter_hook
 
 __all__ = 'Detect', 'SDetect', 'Segment', 'Pose', 'Classify', 'RTDETRDecoder'
 
@@ -26,7 +26,7 @@ class Detect(nn.Module):
     anchors = torch.empty(0)  # init
     strides = torch.empty(0)  # init
 
-    def __init__(self, nc=80, calculation=False, ch=()):
+    def __init__(self, nc=80, ch=()):
         """Initializes the YOLOv8 detection layer with specified number of classes and channels."""
         super().__init__()
         self.nc = nc  # number of classes
@@ -34,57 +34,21 @@ class Detect(nn.Module):
         self.reg_max = 16  # DFL channels (ch[0] // 16 to scale 4/8/12/16/20 for n/s/m/l/x)
         self.no = nc + self.reg_max * 4  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
-        self.calculation = calculation
         c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc, 100))  # channels
 
-        self.cv2 = nn.ModuleList(nn.Sequential(Conv(x, c2, 3, 1, calculation), Conv(c2, c2, 3, 1, calculation), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch)
-        self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3, 1, calculation), Conv(c3, c3, 3, 1, calculation), nn.Conv2d(c3, self.nc, 1)) for x in ch)
+        self.cv2 = nn.ModuleList(nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch)
+        self.cv3 = nn.ModuleList(nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
 
         #self.cv2 = nn.ModuleList(nn.Sequential(SConv(x, c2, 3), SConv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch)
         #self.cv3 = nn.ModuleList(nn.Sequential(SConv(x, c3, 3), SConv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch)
 
         self.dfl = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
 
-
     def forward(self, x):
-        calculation_li_cv2 = []
-        calculation_li_cv3 = []
-
         """Concatenates and returns predicted bounding boxes and class probabilities."""
         shape = x[0].shape  # BCHW
         for i in range(self.nl):
-            #x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-            # Forward (self.cv2)
-            cv2_output1 = self.cv2[i][0](x[i]) # cv2.i.0 (Conv class)
-            cv2_output2 = self.cv2[i][1](cv2_output1) # cv2.i.1 (Conv class)
-            cv2_output3 = self.cv2[i][2](cv2_output2) # cv2.i.2 (Conv2d layer)
-            # Forward (self.cv3)
-            cv3_output1 = self.cv3[i][0](x[i]) # cv3.i.0 (Conv class)
-            cv3_output2 = self.cv3[i][1](cv3_output1) # cv3.i.1 (Conv class)
-            cv3_output3 = self.cv3[i][2](cv3_output2) # cv3.i.2 (Conv2d layer)
-            x[i] = torch.cat((cv2_output3, cv3_output3), 1)
-
-            if self.calculation == True:
-                # calculations of cv2[i]
-                for name, module in self.cv2[i].named_children():
-                    if len(list(module.children())) > 0: # module : Conv class
-                        calculation_li_cv2 = calculation_li_cv2 + module.calculation_li
-                    else: # module : Conv2d layer
-                        conv_syops = conv_syops_counter_hook(module, cv2_output2, cv2_output3, "conv_conv")
-                        calculation_li_cv2 = calculation_li_cv2 + [conv_syops]
-                # calculations of cv3[i]
-                for name, module in self.cv3[i].named_children():
-                    if len(list(module.children())) > 0: # module : Conv class
-                        calculation_li_cv3 = calculation_li_cv3 + module.calculation_li
-                    else: # module : Conv2d layer
-                        conv_syops = conv_syops_counter_hook(module, cv3_output2, cv3_output3, "conv_conv")
-                        calculation_li_cv3 = calculation_li_cv3 + [conv_syops]
-
-        self.calculation_li = calculation_li_cv2 + calculation_li_cv3 + [0] # dfl.conv (store '0' value temporally)
-
-        if self.calculation == False:
-            self.calculation_li = [0] * 43
-
+            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
         if self.training:
             return x
         elif self.dynamic or self.shape != shape:
@@ -109,7 +73,6 @@ class Detect(nn.Module):
             dbox /= img_size
 
         y = torch.cat((dbox, cls.sigmoid()), 1)
-
         return y if self.export else (y, x)
 
     def bias_init(self):
