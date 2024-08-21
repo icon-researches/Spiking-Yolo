@@ -88,6 +88,39 @@ class Spike_conv(nn.Module):
 
     return spk_output
 
+  def forward_fuse(self, x):
+    """Perform transposed convolution of 2D data."""
+    if self.Encode == True:
+      if not torch.isnan(x).any():
+        spikes = spikegen.rate(x, num_steps=self.timestep)
+      else:
+        spikes = x
+        y = self.conv(x)
+        act = nn.SiLU()
+        #print('Original result')
+        return act(y)
+    elif self.Encode == False or self.Encode == None:
+      spikes = x
+    else:
+      raise ValueError("Not defined encoder value")
+    #spikes = x
+    spk_rec = []  # record output spikes
+
+    # input spikes during self.timestep
+    for t in range(self.timestep):
+      cur_conv = self.conv(spikes[t])
+      #cur_bn = cur_conv
+      spk = self.spike_layer(cur_conv.flatten(1))
+      spk_rec.append(spk)  # record spikes
+    self.spike_layer.reset()
+
+    shape = cur_conv.size()
+
+    spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
+
+    #print('Spike Result')
+    return spk_output
+
 class Spike_Bottleneck(nn.Module):
   """Standard bottleneck."""
 
