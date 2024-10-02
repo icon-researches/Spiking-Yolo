@@ -41,33 +41,31 @@ class Conv(nn.Module):
     #default_act = nn.ReLU()
     default_act = cutting_ReLU()
 
-    def __init__(self, c1, c2, k=1, s=1, calculation=False ,p=None, g=1, d=1, act=True):
+    def __init__(self, c1, c2, k=1, s=1, order=None, calculation=False ,p=None, g=1, d=1, act=True):
         """Initialize Conv layer with given arguments including activation."""
         super().__init__()
         self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         self.bn = nn.BatchNorm2d(c2)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
         self.calculation = calculation
+        self.order = order
 
     def forward(self, x):
-
+      #print("foward")
       y = self.conv(x)
       y2 = self.bn(y)
       z = self.act(y2)
-
-      if self.calculation == True:
-        print("#=====Conv Block=====#")
-        # conv 계층 연산 횟수 측정
-        conv_syops = conv_syops_counter_hook(self.conv, x, y, "conv_conv")
-        # bn 계층 연산 횟수 측정
-        bn_syops = bn_syops_counter_hook(self.bn, y, y2, "conv_bn")
-        # silu 계층 연산 횟수 측정
-        silu_syops = silu_flops_counter_hook(self.act, y2, z, "conv_silu")
-
-      """Apply convolution, batch normalization and activation to input tensor."""
+      if not torch.isnan(z).any():
+        #print('z_batch_max()', z.max())
+        #z.max().item()
+        csv_file = '/home/jylemon1128/PycharmProjects/pythonProject/ann_act_max.csv'
+        with open(csv_file, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([z.max().item()])
       return z
 
     def forward_fuse(self, x):
+        #print("foward_fuse")
         """Perform transposed convolution of 2D data."""
         return self.act(self.conv(x))
 

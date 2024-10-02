@@ -10,6 +10,7 @@ import logging
 from spikingjelly.activation_based.neuron import AdaptBaseNode
 from spikingjelly.activation_based import surrogate
 
+
 class AdaptiveIFNode(AdaptBaseNode):
   def __init__(self, v_threshold: float = 1., v_reset: float = 0.,
                  v_rest: float = 0., w_rest: float = 0., tau_w: float = 2., a: float = 0., b: float = 0.,

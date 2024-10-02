@@ -28,7 +28,7 @@ class Spike_Conv(nn.Module):
     self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
     self.bn = nn.BatchNorm2d(c2)
 
-    allowed_keys = ['node', 'ts', 'calculation', 'encode']
+    allowed_keys = ['node', 'ts', 'calculation', 'encode', 'shift', 'thresh', 'mem']
 
     for key in data:
       if key not in allowed_keys:
@@ -48,28 +48,32 @@ class Spike_Conv(nn.Module):
         self.spike_layer = AdaptiveIFNode()
     elif self.node == 'Ad_LIF' or self.node=='ad_lif':
         self.spike_layer = AdaptiveLIFNode()
+    elif self.node == 'Soft_IF' or self.node=='soft_if':
+        self.spike_layer = neuron.IFNode()
+        self.thresh = data['thresh'] if 'thresh' in data else 0
+        self.shift = data['shift'] if 'shift' in data else 0
+        self.mem = None
     else:
         raise ValueError("Non defined neuron")
-
+    print('th: ', self.thresh, 'sh: ', self.shift)
 
   def forward(self, x):
+    #print("SNN Forward")
     # generate spikes from input data (x)
     if self.Encode == True:
         spikes = spikegen.rate(x, num_steps=self.timestep)
     elif self.Encode == False or self.Encode == None:
-        spikes = x
         spk_rec = []
         y = self.conv(x)
         y2 = self.bn(y)
-
         shape = y2.size()
 
         for t in range(self.timestep):
-          spk = self.node(y2.flatten(1))
+          spk = self.spike_layer(y2.flatten(1))
           # IF or LIF 계층 연산 횟수 측정
           spk_rec.append(spk)
 
-        self.node.reset()
+        self.spike_layer.reset()
         # self.node.neuronal_reset(spk)
 
         spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
@@ -85,16 +89,6 @@ class Spike_Conv(nn.Module):
       cur_conv = self.conv(spikes[t])
       cur_bn = self.bn(cur_conv)
       spk_bn = self.spike_layer(cur_bn.flatten(1))
-
-      if self.calculation == True:
-        # conv 계층 연산 횟수 측정
-        conv_syops = conv_syops_counter_hook(self.conv, spikes[t], cur_conv, "sconv_conv")
-        # lif_conv(Leaky) 계층 연산 횟수 측정
-        # lif_conv_syops = Leaky_syops_counter_hook(self.lif_conv, cur_conv, "sconv_lif_conv")
-        # bn 계층 연산 횟수 측정
-        bn_syops = bn_syops_counter_hook(self.bn, cur_conv, cur_bn, "sconv_bn")
-        # lif_bn(Leaky) 계층 연산 횟수 측정
-        lif_bn_syops = Leaky_syops_counter_hook(self.lif_bn, cur_bn, "sconv_lif_bn")
 
       spk_rec.append(spk_bn)  # record spikes
 
@@ -122,6 +116,27 @@ class Spike_Conv(nn.Module):
       raise ValueError("Not defined encoder value")
     #spikes = x
     spk_rec = []  # record output spikes
+    spike_sum = 0
+    #print("IF")
+    if self.node == 'Soft_IF' or self.node=='soft_if':
+      #print("Soft IF")
+      for t in range(self.timestep):
+        cur_conv = self.conv(spikes[t]) # + self.shift
+        #print(cur_conv.size())
+        if self.mem is None:
+          self.mem = torch.zeros(cur_conv.size(0), cur_conv.size(1), cur_conv.size(2), cur_conv.size(3), device=cur_conv.device)
+          #print(self.mem.size())
+        self.mem += cur_conv
+        spike = self.mem.ge(self.thresh).float() * self.thresh
+        self.mem -= spike
+        spike_sum += spike
+      #spk_rec.append(spike)  # record spikes
+      spk_rec.append(spike_sum/self.timestep)
+      shape = cur_conv.size()
+      #print("shape", shape)
+      spk_output = torch.stack(spk_rec).view(-1, shape[0], shape[1], shape[2], shape[3]).sum(0)
+      self.mem = None
+      return spk_output
 
     # input spikes during self.timestep
     for t in range(self.timestep):
